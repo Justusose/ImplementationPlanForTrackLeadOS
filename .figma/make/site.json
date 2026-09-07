@@ -1,0 +1,10 @@
+{
+  "description": "Streamlines project planning by generating detailed implementation roadmaps from documents, helping teams efficiently launch software products.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
