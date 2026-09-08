@@ -19,11 +19,13 @@ const NAV: Record<string, NavItem[]> = {
     { label: "Radar", to: "/app/radar", icon: "Radar" },
     { label: "Campaigns", to: "/app/campaigns", icon: "Link" },
     { label: "Capture Widgets", to: "/app/widgets", icon: "Widget" },
+    { label: "Support", to: "/app/support", icon: "Inbox" },
     { label: "Settings", to: "/app/settings", icon: "Settings" },
   ],
   staff: [
     { label: "Pipeline", to: "/staff", icon: "Pipeline" },
     { label: "Radar", to: "/staff/radar", icon: "Radar" },
+    { label: "Support", to: "/staff/support", icon: "Inbox" },
   ],
   super_admin: [
     { label: "Master Dashboard", to: "/admin", icon: "Dashboard" },

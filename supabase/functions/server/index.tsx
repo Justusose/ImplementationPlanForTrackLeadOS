@@ -1,8 +1,14 @@
+// TrackLead OS — privileged edge server (Hono).
+// Runs with the service-role key so it can perform tenant-safe writes that the
+// browser (anon + RLS) cannot: Paystack checkout, team invites, super-admin
+// impersonation/tenant management, and public capture-form ingestion.
+//
+// IMPORTANT: after editing this file, redeploy the edge function from the
+// Make settings page — code changes are NOT live until you redeploy.
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
-import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
-import * as kv from "./kv_store.tsx";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const app = new Hono();
 const P = "/make-server-e8aa61da";
@@ -12,224 +18,175 @@ app.use(
   "/*",
   cors({
     origin: "*",
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "apikey", "x-client-info"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
     maxAge: 600,
   }),
 );
 
-// Service-role client — bypasses RLS. Never expose this key to the browser.
-const admin = () =>
-  createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-  );
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const PAYSTACK_SECRET = Deno.env.get("PAYSTACK_SECRET_KEY") ?? "";
 
-/** Resolve the calling user + their JWT claims from the Authorization header. */
+function admin() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+/** Resolve the calling user + JWT claims from the Authorization header. */
 async function caller(c: any) {
   const auth = c.req.header("Authorization") ?? "";
-  const token = auth.replace(/^Bearer\s+/i, "");
+  const token = auth.replace("Bearer ", "");
   if (!token) return null;
   const { data, error } = await admin().auth.getUser(token);
-  if (error || !data?.user) return null;
-  const meta = data.user.app_metadata ?? {};
+  if (error || !data.user) return null;
+  const meta = (data.user.app_metadata ?? {}) as Record<string, unknown>;
   return {
-    id: data.user.id,
-    email: data.user.email ?? "",
-    role: (meta.role as string) ?? "owner",
+    user: data.user,
+    role: (meta.role as string) ?? null,
     workspace_id: (meta.workspace_id as string) ?? null,
   };
 }
 
 app.get(`${P}/health`, (c) => c.json({ status: "ok" }));
 
-// ---------- Billing: initialize a Paystack checkout ----------------------
+// ---------------------------------------------------------------- billing ----
 app.post(`${P}/billing/paystack/init`, async (c) => {
-  const user = await caller(c);
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const who = await caller(c);
+  if (!who) return c.json({ error: "Not authenticated." }, 401);
+  if (!PAYSTACK_SECRET) {
+    return c.json({ error: "Paystack is not configured. Add PAYSTACK_SECRET_KEY." }, 400);
+  }
+  const body = await c.req.json().catch(() => ({}));
+  const planId = body.plan ?? "starter";
 
-  const key = Deno.env.get("PAYSTACK_SECRET_KEY");
-  if (!key) return c.json({ error: "Billing is not configured yet." }, 400);
-
-  const { plan } = await c.req.json().catch(() => ({}));
-  const sb = admin();
-  const { data: planRow } = await sb
+  const db = admin();
+  const { data: plan } = await db
     .from("subscription_plans")
     .select("id,name,price_ngn")
-    .eq("id", plan)
+    .eq("id", planId)
     .maybeSingle();
-  if (!planRow) return c.json({ error: "Unknown plan." }, 400);
+  const price = plan?.price_ngn ?? 5500;
 
-  const origin = c.req.header("origin") ?? "";
-  const init = await fetch("https://api.paystack.co/transaction/initialize", {
+  const origin = c.req.header("Origin") ?? SUPABASE_URL;
+  const res = await fetch("https://api.paystack.co/transaction/initialize", {
     method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
-      email: user.email,
-      amount: planRow.price_ngn * 100, // kobo
-      currency: "NGN",
+      email: who.user.email,
+      amount: Math.round(price * 100), // kobo
       callback_url: `${origin}/app/settings`,
-      metadata: { workspace_id: user.workspace_id, plan: planRow.id, user_id: user.id },
+      metadata: { workspace_id: who.workspace_id, plan: planId },
     }),
   });
-  const body = await init.json().catch(() => ({}));
-  if (!init.ok || !body?.status) {
-    return c.json({ error: body?.message ?? "Could not start checkout." }, 400);
+  const pay = await res.json().catch(() => ({}));
+  if (!res.ok || !pay.status) {
+    return c.json({ error: pay.message ?? "Could not start checkout." }, 400);
   }
-  return c.json({ authorization_url: body.data.authorization_url });
+  // Reflect the selected plan immediately; the webhook confirms payment.
+  if (who.workspace_id) {
+    await db.from("workspaces").update({ plan: planId }).eq("id", who.workspace_id);
+  }
+  return c.json({ authorization_url: pay.data.authorization_url });
 });
 
-// ---------- Team: invite a staff member ----------------------------------
+// ------------------------------------------------------------------- team ----
 app.post(`${P}/team/invite`, async (c) => {
-  const user = await caller(c);
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
-  if (user.role !== "owner" && user.role !== "super_admin") {
+  const who = await caller(c);
+  if (!who || !who.workspace_id) return c.json({ error: "Not authenticated." }, 401);
+  if (who.role !== "owner" && who.role !== "super_admin") {
     return c.json({ error: "Only owners can invite team members." }, 403);
   }
-  const { email } = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body.email ?? "").trim().toLowerCase();
   if (!email) return c.json({ error: "Email is required." }, 400);
 
-  const sb = admin();
-  // Pre-create the pending membership so the signup trigger attaches them as staff.
-  await sb.from("workspace_members").upsert(
-    { workspace_id: user.workspace_id, email, role: "staff", status: "invited" },
+  const db = admin();
+  await db.from("workspace_members").upsert(
+    { workspace_id: who.workspace_id, email, role: "staff", status: "invited" },
     { onConflict: "workspace_id,email" },
   );
-
-  const origin = c.req.header("origin") ?? "";
-  const { error } = await sb.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${origin}/login`,
-    data: { invited_to: user.workspace_id },
-  });
-  // A duplicate invite (user already exists) is not fatal — the membership stands.
-  if (error && !/already/i.test(error.message)) {
+  const { error } = await db.auth.admin.inviteUserByEmail(email);
+  if (error && !String(error.message).includes("already been registered")) {
     return c.json({ error: error.message }, 400);
   }
   return c.json({ ok: true });
 });
 
-// ---------- Super admin: impersonate ("Login as") ------------------------
+// ------------------------------------------------------------------ admin ----
 app.post(`${P}/admin/impersonate`, async (c) => {
-  const user = await caller(c);
-  if (!user || user.role !== "super_admin") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-  const { email } = await c.req.json().catch(() => ({}));
+  const who = await caller(c);
+  if (!who || who.role !== "super_admin") return c.json({ error: "Forbidden." }, 403);
+  const body = await c.req.json().catch(() => ({}));
+  const email = String(body.email ?? "").trim();
   if (!email) return c.json({ error: "Email is required." }, 400);
-
-  const origin = c.req.header("origin") ?? "";
-  const { data, error } = await admin().auth.admin.generateLink({
-    type: "magiclink",
-    email,
-    options: { redirectTo: `${origin}/login` },
-  });
+  const { data, error } = await admin().auth.admin.generateLink({ type: "magiclink", email });
   if (error) return c.json({ error: error.message }, 400);
   return c.json({ action_link: data.properties?.action_link });
 });
 
-// ---------- Super admin: manage a tenant ---------------------------------
 app.post(`${P}/admin/tenant/:id`, async (c) => {
-  const user = await caller(c);
-  if (!user || user.role !== "super_admin") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
+  const who = await caller(c);
+  if (!who || who.role !== "super_admin") return c.json({ error: "Forbidden." }, 403);
   const id = c.req.param("id");
-  const patch = await c.req.json().catch(() => ({}));
-  const allowed: Record<string, unknown> = {};
-  if (typeof patch.billing_status === "string") allowed.billing_status = patch.billing_status;
-  if (typeof patch.plan === "string") allowed.plan = patch.plan;
-
-  const { error } = await admin().from("workspaces").update(allowed).eq("id", id);
+  const body = await c.req.json().catch(() => ({}));
+  const patch: Record<string, unknown> = {};
+  if (typeof body.plan === "string") patch.plan = body.plan;
+  if (typeof body.billing_status === "string") patch.billing_status = body.billing_status;
+  if (Object.keys(patch).length === 0) return c.json({ error: "Nothing to update." }, 400);
+  const { error } = await admin().from("workspaces").update(patch).eq("id", id);
   if (error) return c.json({ error: error.message }, 400);
   return c.json({ ok: true });
 });
 
-// ---------- Public capture: a visitor submits a widget form --------------
-// No auth: the widget id maps to a workspace, and we insert with service role.
+// ---------------------------------------------------------------- capture ----
+// Public form submission: no auth. Service role inserts the lead into the
+// widget's workspace (anon can't satisfy the tenant RLS check).
 app.post(`${P}/capture/:widgetId`, async (c) => {
   const widgetId = c.req.param("widgetId");
-  const { name, phone } = await c.req.json().catch(() => ({}));
-  if (!name) return c.json({ error: "Name is required." }, 400);
-
-  const sb = admin();
-  const { data: widget } = await sb
+  const body = await c.req.json().catch(() => ({}));
+  const db = admin();
+  const { data: widget } = await db
     .from("capture_widgets")
-    .select("workspace_id")
+    .select("id,workspace_id,config")
     .eq("id", widgetId)
     .maybeSingle();
-  if (!widget) return c.json({ error: "Unknown capture link." }, 404);
+  if (!widget) return c.json({ error: "Widget not found." }, 404);
 
-  const { error } = await sb.from("leads").insert({
-    workspace_id: widget.workspace_id,
-    name,
-    phone: phone ?? null,
-    source: "capture-form",
-    stage: "new",
-  });
+  const fields = (body.fields ?? {}) as Record<string, string>;
+  const name = String(body.name ?? fields.name ?? fields.full_name ?? "New lead").trim();
+  const phone = String(body.phone ?? fields.phone ?? fields.whatsapp ?? "").trim();
+
+  const { data: lead, error } = await db
+    .from("leads")
+    .insert({
+      workspace_id: widget.workspace_id,
+      name: name || "New lead",
+      phone: phone || null,
+      source: "Capture widget",
+      stage: "new",
+    })
+    .select("id")
+    .single();
   if (error) return c.json({ error: error.message }, 400);
+
+  // Preserve any extra form answers as the first note on the lead.
+  const extras = Object.entries(fields).filter(
+    ([k, v]) => v && !["name", "full_name", "phone", "whatsapp"].includes(k),
+  );
+  if (lead && extras.length) {
+    await db.from("lead_notes").insert({
+      workspace_id: widget.workspace_id,
+      lead_id: lead.id,
+      body: extras.map(([k, v]) => `${k}: ${v}`).join("\n"),
+    });
+  }
   return c.json({ ok: true });
-});
-
-// ---------- OAuth: begin an integration connect --------------------------
-// Returns the provider authorize URL. Completes once the app is approved.
-app.post(`${P}/oauth/:provider/start`, async (c) => {
-  const user = await caller(c);
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
-  const provider = c.req.param("provider");
-  const origin = c.req.header("origin") ?? "";
-  const redirect = `${Deno.env.get("SUPABASE_URL")}/functions/v1/make-server-e8aa61da/oauth/${provider}/callback`;
-  const state = btoa(JSON.stringify({ ws: user.workspace_id, origin }));
-
-  const map: Record<string, string | undefined> = {
-    meta: Deno.env.get("META_APP_ID"),
-    facebook: Deno.env.get("META_APP_ID"),
-    instagram: Deno.env.get("META_APP_ID"),
-  };
-  const clientId = map[provider];
-  if (!clientId) {
-    return c.json({ error: `${provider} is not configured for OAuth yet.` }, 400);
-  }
-  const url =
-    `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}` +
-    `&redirect_uri=${encodeURIComponent(redirect)}` +
-    `&state=${encodeURIComponent(state)}` +
-    `&scope=pages_manage_metadata,pages_read_engagement,instagram_manage_comments`;
-  return c.json({ authorize_url: url });
-});
-
-// ---------- OAuth: provider redirect target ------------------------------
-app.get(`${P}/oauth/:provider/callback`, async (c) => {
-  const provider = c.req.param("provider");
-  const code = c.req.query("code");
-  const stateRaw = c.req.query("state") ?? "";
-  let ws: string | null = null;
-  let origin = "";
-  try {
-    const s = JSON.parse(atob(stateRaw));
-    ws = s.ws;
-    origin = s.origin;
-  } catch {
-    /* ignore malformed state */
-  }
-  const appId = Deno.env.get("META_APP_ID");
-  const secret = Deno.env.get("META_APP_SECRET");
-  const redirect = `${Deno.env.get("SUPABASE_URL")}/functions/v1/make-server-e8aa61da/oauth/${provider}/callback`;
-
-  if (code && appId && secret && ws) {
-    const tokenRes = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${appId}` +
-        `&redirect_uri=${encodeURIComponent(redirect)}&client_secret=${secret}&code=${code}`,
-    );
-    const tok = await tokenRes.json().catch(() => ({}));
-    if (tok?.access_token) {
-      await admin().from("integrations").upsert(
-        { workspace_id: ws, provider, access_token: tok.access_token },
-        { onConflict: "workspace_id,provider" },
-      );
-    }
-  }
-  return c.redirect(`${origin || ""}/app/settings?connected=${provider}`);
 });
 
 Deno.serve(app.fetch);

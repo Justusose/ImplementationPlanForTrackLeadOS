@@ -15,6 +15,7 @@ import Radar from "./routes/workspace/Radar";
 import Campaigns from "./routes/workspace/Campaigns";
 import Widgets from "./routes/workspace/Widgets";
 import Settings from "./routes/workspace/Settings";
+import Support from "./routes/workspace/Support";
 
 import {
   AdminBilling,
@@ -58,10 +59,12 @@ function Routes() {
   if (path === "/app/campaigns") return <Protected><Campaigns /></Protected>;
   if (path === "/app/widgets") return <Protected><Widgets /></Protected>;
   if (path === "/app/settings") return <Protected><Settings /></Protected>;
+  if (path === "/app/support") return <Protected><Support /></Protected>;
 
   // Staff
   if (path === "/staff") return <Protected><Pipeline staff /></Protected>;
   if (path === "/staff/radar") return <Protected><Radar staff /></Protected>;
+  if (path === "/staff/support") return <Protected><Support /></Protected>;
 
   // Super admin
   if (path === "/admin") return <Protected><AdminDashboard /></Protected>;

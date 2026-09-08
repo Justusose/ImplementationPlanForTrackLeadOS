@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../lib/icons";
 import { serverCall, update } from "../../lib/supabase";
+import { useAuth } from "../../lib/auth";
 import { useTable } from "../../lib/useData";
-import { Badge, Button, Card, Drawer, EmptyState, Field, Input, PageHeader, StatCard } from "../../components/ui";
+import { Badge, Button, Card, Drawer, EmptyState, Field, Input, PageHeader, StatCard, Textarea } from "../../components/ui";
+import { Thread, type Ticket } from "../workspace/Support";
 
 const PLAN_PRICES: Record<string, number> = { starter: 5500, growth: 15500, pro: 35000 };
 
@@ -246,14 +248,18 @@ export function AdminBilling() {
 interface Plan {
   id: string;
   name: string;
+  tagline: string | null;
   price_ngn: number;
   lead_limit: number | null;
+  seat_limit: number | null;
+  features: string[];
+  highlighted: boolean;
 }
 
 export function AdminPlans() {
   const { rows, setRows } = useTable<Plan>(
     "subscription_plans",
-    "select=id,name,price_ngn,lead_limit&order=price_ngn.asc",
+    "select=id,name,tagline,price_ngn,lead_limit,seat_limit,features,highlighted&order=price_ngn.asc",
   );
   const [saving, setSaving] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -265,9 +271,16 @@ export function AdminPlans() {
   async function save(p: Plan) {
     setSaving(p.id);
     setSaved(null);
+    const num = (v: number | null) =>
+      v === null || (v as unknown as string) === "" ? null : Number(v);
     const ok = await update("subscription_plans", `id=eq.${p.id}`, {
+      name: p.name,
+      tagline: p.tagline,
       price_ngn: Number(p.price_ngn) || 0,
-      lead_limit: p.lead_limit === null || (p.lead_limit as unknown as string) === "" ? null : Number(p.lead_limit),
+      lead_limit: num(p.lead_limit),
+      seat_limit: num(p.seat_limit),
+      features: (p.features ?? []).filter((f) => f.trim() !== ""),
+      highlighted: p.highlighted,
     });
     setSaving(null);
     if (ok) {
@@ -280,57 +293,108 @@ export function AdminPlans() {
     <div>
       <PageHeader
         title="Plans & Features"
-        subtitle="Set subscription tiers, prices and limits — reflected live on the pricing page."
+        subtitle="Set subscription tiers, prices, limits and features — reflected live on the pricing page and enforced across every workspace."
       />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {rows.map((p) => (
-          <Card key={p.id} className="p-6">
-            <h3 className="text-base">{p.name}</h3>
-            <Field label="Monthly price (₦)">
-              <Input
-                type="number"
-                value={p.price_ngn}
-                onChange={(e) => edit(p.id, { price_ngn: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Lead limit" hint="Leave blank for unlimited.">
-              <Input
-                type="number"
-                placeholder="Unlimited"
-                value={p.lead_limit ?? ""}
-                onChange={(e) =>
-                  edit(p.id, { lead_limit: e.target.value === "" ? null : Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Button
-              size="sm"
-              variant="secondary"
-              className="mt-2"
-              disabled={saving === p.id}
-              onClick={() => save(p)}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={<Icon.Layers size={26} />}
+          title="No plans configured"
+          body="Seed your subscription_plans table (Starter, Growth, Pro) to manage pricing and limits here."
+        />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-3">
+          {rows.map((p) => (
+            <Card
+              key={p.id}
+              className={cxHighlight(p.highlighted)}
             >
-              {saving === p.id ? "Saving…" : saved === p.id ? "Saved ✓" : "Save changes"}
-            </Button>
-          </Card>
-        ))}
-      </div>
+              <Field label="Plan name">
+                <Input value={p.name} onChange={(e) => edit(p.id, { name: e.target.value })} />
+              </Field>
+              <Field label="Tagline">
+                <Input
+                  value={p.tagline ?? ""}
+                  placeholder="For growing teams"
+                  onChange={(e) => edit(p.id, { tagline: e.target.value })}
+                />
+              </Field>
+              <Field label="Monthly price (₦)">
+                <Input
+                  type="number"
+                  value={p.price_ngn}
+                  onChange={(e) => edit(p.id, { price_ngn: Number(e.target.value) })}
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Lead limit" hint="Blank = unlimited">
+                  <Input
+                    type="number"
+                    placeholder="∞"
+                    value={p.lead_limit ?? ""}
+                    onChange={(e) =>
+                      edit(p.id, { lead_limit: e.target.value === "" ? null : Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field label="Seat limit" hint="Blank = unlimited">
+                  <Input
+                    type="number"
+                    placeholder="∞"
+                    value={p.seat_limit ?? ""}
+                    onChange={(e) =>
+                      edit(p.id, { seat_limit: e.target.value === "" ? null : Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </div>
+              <Field label="Features" hint="One per line — shown on the pricing page.">
+                <Textarea
+                  rows={5}
+                  value={(p.features ?? []).join("\n")}
+                  onChange={(e) => edit(p.id, { features: e.target.value.split("\n") })}
+                  placeholder={"Unlimited pipelines\nSocial Radar\nPriority support"}
+                />
+              </Field>
+              <label className="mt-1 flex items-center gap-2 text-sm text-[var(--color-ink-soft)]">
+                <input
+                  type="checkbox"
+                  checked={p.highlighted}
+                  onChange={(e) => edit(p.id, { highlighted: e.target.checked })}
+                />
+                Highlight as "most popular"
+              </label>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-3"
+                disabled={saving === p.id}
+                onClick={() => save(p)}
+              >
+                {saving === p.id ? "Saving…" : saved === p.id ? "Saved ✓" : "Save changes"}
+              </Button>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-interface Ticket {
-  id: string;
-  subject: string;
-  status: string;
+function cxHighlight(on: boolean) {
+  return on ? "space-y-1 border-2 border-[var(--color-brand)] p-6" : "space-y-1 p-6";
 }
 
 export function AdminSupport() {
+  const { session } = useAuth();
   const { rows, setRows } = useTable<Ticket>("support_tickets", "select=*&order=created_at.desc");
+  const [active, setActive] = useState<Ticket | null>(null);
 
-  async function resolve(id: string) {
-    const ok = await update("support_tickets", `id=eq.${id}`, { status: "resolved" });
-    if (ok) setRows((prev) => prev.map((t) => (t.id === id ? { ...t, status: "resolved" } : t)));
+  async function setStatus(id: string, status: string) {
+    const ok = await update("support_tickets", `id=eq.${id}`, { status });
+    if (ok) {
+      setRows((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+      setActive((a) => (a && a.id === id ? { ...a, status } : a));
+    }
   }
 
   return (
@@ -347,20 +411,53 @@ export function AdminSupport() {
           <ul className="divide-y divide-[var(--color-line)]">
             {rows.map((t) => (
               <li key={t.id} className="flex items-center justify-between px-5 py-3">
-                <span className="text-sm text-[var(--color-ink)]">{t.subject}</span>
+                <button
+                  className="tl-focus flex-1 text-left text-sm text-[var(--color-ink)] hover:text-[var(--color-brand)]"
+                  onClick={() => setActive(t)}
+                >
+                  {t.subject}
+                </button>
                 <div className="flex items-center gap-2">
                   <Badge tone={t.status === "open" ? "warning" : "success"}>{t.status}</Badge>
-                  {t.status === "open" ? (
-                    <Button size="sm" variant="ghost" onClick={() => resolve(t.id)}>
-                      Resolve
-                    </Button>
-                  ) : null}
+                  <Button size="sm" variant="ghost" onClick={() => setActive(t)}>
+                    Open
+                  </Button>
                 </div>
               </li>
             ))}
           </ul>
         </Card>
       )}
+
+      <Drawer
+        open={!!active}
+        onClose={() => setActive(null)}
+        title={
+          active ? (
+            <div className="flex items-center gap-2">
+              <span className="text-base font-semibold text-[var(--color-ink)]">{active.subject}</span>
+              <Badge tone={active.status === "open" ? "warning" : "success"}>{active.status}</Badge>
+            </div>
+          ) : null
+        }
+      >
+        {active ? (
+          <div className="space-y-4">
+            <Thread ticket={active} senderRole="super_admin" senderId={session?.user.id ?? null} />
+            <div className="flex gap-2">
+              {active.status === "open" ? (
+                <Button size="sm" variant="secondary" onClick={() => setStatus(active.id, "resolved")}>
+                  Mark resolved
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" onClick={() => setStatus(active.id, "open")}>
+                  Reopen
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </Drawer>
     </div>
   );
 }

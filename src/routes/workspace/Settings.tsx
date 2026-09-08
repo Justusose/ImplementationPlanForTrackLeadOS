@@ -1,16 +1,10 @@
-// Owner Settings: Integrations, Team invites, Billing.
+// Owner Settings: Profile & KYC, Integrations, Team invites, Billing.
 import { useEffect, useState } from "react";
-import { Icon, type IconName } from "../../lib/icons";
-import { paystackInit, select, serverCall } from "../../lib/supabase";
+import { Icon } from "../../lib/icons";
+import { useAuth } from "../../lib/auth";
+import { paystackInit, select, serverCall, update } from "../../lib/supabase";
 import { Badge, Button, Card, Field, Input, PageHeader, cx } from "../../components/ui";
 import { useTable } from "../../lib/useData";
-
-const INTEGRATIONS: { key: string; label: string; desc: string; icon: IconName; primary?: boolean }[] = [
-  { key: "meta", label: "Meta (Facebook & Instagram)", desc: "Capture comments, DMs & mentions.", icon: "Meta", primary: true },
-  { key: "tiktok", label: "TikTok", desc: "Track engagements on your videos.", icon: "Tiktok" },
-  { key: "x", label: "X (Twitter)", desc: "Monitor mentions and replies.", icon: "Twitter" },
-  { key: "linkedin", label: "LinkedIn", desc: "Capture inbound from your page.", icon: "Linkedin" },
-];
 
 const PLANS = [
   { id: "starter", name: "Starter", price: 5500 },
@@ -19,8 +13,9 @@ const PLANS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"integrations" | "team" | "billing">("integrations");
+  const [tab, setTab] = useState<"profile" | "integrations" | "team" | "billing">("profile");
   const tabs = [
+    { key: "profile" as const, label: "Profile" },
     { key: "integrations" as const, label: "Integrations" },
     { key: "team" as const, label: "Team" },
     { key: "billing" as const, label: "Billing" },
@@ -28,7 +23,7 @@ export default function Settings() {
 
   return (
     <div>
-      <PageHeader title="Settings" subtitle="Connect channels, manage your team and billing." />
+      <PageHeader title="Settings" subtitle="Manage your business profile, team and billing." />
 
       <div className="mb-6 flex gap-6 border-b border-[var(--color-line)]">
         {tabs.map((t) => (
@@ -47,75 +42,157 @@ export default function Settings() {
         ))}
       </div>
 
-      {tab === "integrations" ? <Integrations /> : tab === "team" ? <Team /> : <Billing />}
+      {tab === "profile" ? (
+        <Profile />
+      ) : tab === "integrations" ? (
+        <Integrations />
+      ) : tab === "team" ? (
+        <Team />
+      ) : (
+        <Billing />
+      )}
+    </div>
+  );
+}
+
+interface Workspace {
+  id: string;
+  name: string;
+  phone: string | null;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+  industry: string | null;
+  reg_number: string | null;
+}
+
+function Profile() {
+  const { session } = useAuth();
+  const [ws, setWs] = useState<Partial<Workspace>>({});
+  const [fullName, setFullName] = useState("");
+  const [userPhone, setUserPhone] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    select<Workspace>("workspaces", "select=*").then((rows) => {
+      if (rows[0]) setWs(rows[0]);
+    });
+    if (session?.user.id) {
+      select<{ full_name: string | null; phone: string | null }>(
+        "profiles",
+        `select=full_name,phone&id=eq.${session.user.id}`,
+      ).then((rows) => {
+        setFullName(rows[0]?.full_name ?? "");
+        setUserPhone(rows[0]?.phone ?? "");
+      });
+    }
+  }, [session?.user.id]);
+
+  function set(k: keyof Workspace, v: string) {
+    setWs((prev) => ({ ...prev, [k]: v }));
+  }
+
+  async function save() {
+    setBusy(true);
+    setSaved(false);
+    if (ws.id) {
+      await update("workspaces", `id=eq.${ws.id}`, {
+        name: ws.name,
+        phone: ws.phone,
+        address: ws.address,
+        city: ws.city,
+        country: ws.country,
+        industry: ws.industry,
+        reg_number: ws.reg_number,
+      });
+    }
+    if (session?.user.id) {
+      await update("profiles", `id=eq.${session.user.id}`, {
+        full_name: fullName,
+        phone: userPhone,
+      });
+    }
+    setBusy(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="p-6">
+        <h3 className="text-base">Business profile</h3>
+        <p className="mt-1 text-sm text-[var(--color-muted)]">
+          Used across your capture widgets, invoices and KYC verification.
+        </p>
+        <div className="mt-5 space-y-4">
+          <Field label="Workspace / business name">
+            <Input value={ws.name ?? ""} onChange={(e) => set("name", e.target.value)} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Business phone">
+              <Input value={ws.phone ?? ""} onChange={(e) => set("phone", e.target.value)} placeholder="+234…" />
+            </Field>
+            <Field label="Industry">
+              <Input value={ws.industry ?? ""} onChange={(e) => set("industry", e.target.value)} placeholder="Retail" />
+            </Field>
+          </div>
+          <Field label="Address">
+            <Input value={ws.address ?? ""} onChange={(e) => set("address", e.target.value)} placeholder="12 Marina Rd" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="City">
+              <Input value={ws.city ?? ""} onChange={(e) => set("city", e.target.value)} placeholder="Lagos" />
+            </Field>
+            <Field label="Country">
+              <Input value={ws.country ?? ""} onChange={(e) => set("country", e.target.value)} placeholder="Nigeria" />
+            </Field>
+          </div>
+          <Field label="Business reg. number (RC / CAC)" hint="Required for KYC verification.">
+            <Input value={ws.reg_number ?? ""} onChange={(e) => set("reg_number", e.target.value)} placeholder="RC 1234567" />
+          </Field>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-base">Your details</h3>
+        <p className="mt-1 text-sm text-[var(--color-muted)]">
+          How you appear to your team and in notifications.
+        </p>
+        <div className="mt-5 space-y-4">
+          <Field label="Full name">
+            <Input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Ada Okafor" />
+          </Field>
+          <Field label="Email">
+            <Input value={session?.user.email ?? ""} disabled />
+          </Field>
+          <Field label="Personal phone">
+            <Input value={userPhone} onChange={(e) => setUserPhone(e.target.value)} placeholder="+234…" />
+          </Field>
+          <Button onClick={save} disabled={busy}>
+            {busy ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
+          </Button>
+        </div>
+      </Card>
     </div>
   );
 }
 
 function Integrations() {
-  const [connected, setConnected] = useState<Record<string, boolean>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    select<{ provider: string }>("integrations", "select=provider").then((rows) => {
-      const m: Record<string, boolean> = {};
-      for (const r of rows) m[r.provider] = true;
-      setConnected(m);
-    });
-  }, []);
-
-  async function connect(key: string) {
-    setErr(null);
-    setBusy(key);
-    const { data, error } = await serverCall<{ authorize_url: string }>(`/oauth/${key}/start`);
-    setBusy(null);
-    if (error) return setErr(error);
-    if (data?.authorize_url) window.location.href = data.authorize_url;
-  }
-
   return (
-    <div>
-      {err ? (
-        <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{err}</p>
-      ) : null}
-      <div className="grid gap-4 sm:grid-cols-2">
-        {INTEGRATIONS.map((it) => {
-          const Ico = Icon[it.icon];
-          const isOn = connected[it.key];
-          return (
-            <Card key={it.key} className="flex items-start justify-between gap-4 p-5">
-              <div className="flex gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-brand-50)] text-[var(--color-brand)]">
-                  <Ico size={20} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-[var(--color-ink)]">{it.label}</span>
-                    {it.primary ? <Badge tone="brand">Recommended</Badge> : null}
-                  </div>
-                  <p className="mt-0.5 text-sm text-[var(--color-muted)]">{it.desc}</p>
-                </div>
-              </div>
-              {isOn ? (
-                <Badge tone="success">
-                  <Icon.Check size={13} /> Connected
-                </Badge>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy === it.key}
-                  onClick={() => connect(it.key)}
-                >
-                  {busy === it.key ? "Opening…" : "Connect"}
-                </Button>
-              )}
-            </Card>
-          );
-        })}
+    <Card className="flex flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--color-brand-50)] text-[var(--color-brand)]">
+        <Icon.Radar size={26} />
       </div>
-    </div>
+      <h3 className="text-lg">Integrations are coming soon</h3>
+      <p className="mt-1.5 max-w-md text-sm text-[var(--color-muted)]">
+        Connect Meta, TikTok, X and LinkedIn to turn comments, DMs and mentions into warm leads
+        automatically. We're putting the finishing touches on it.
+      </p>
+      <Badge tone="brand">
+        <Icon.Spark size={13} /> Coming soon
+      </Badge>
+    </Card>
   );
 }
 
