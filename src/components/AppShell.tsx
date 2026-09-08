@@ -166,8 +166,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NotificationsBell />
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto px-4 py-6 lg:px-8 lg:py-8">
-          <div className="mx-auto max-w-6xl tl-fade-up">{children}</div>
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6 lg:px-8 lg:py-8">
+          <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col tl-fade-up">{children}</div>
         </main>
       </div>
     </div>

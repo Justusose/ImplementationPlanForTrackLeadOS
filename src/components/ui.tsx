@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../lib/icons";
 
 function cx(...parts: (string | false | undefined | null)[]) {
@@ -167,7 +168,9 @@ export function Drawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  return (
+  // Render via portal so CSS transforms on ancestor elements (e.g. tl-fade-up)
+  // don't create a new containing block that breaks position:fixed.
+  return createPortal(
     <div
       className={cx(
         "fixed inset-0 z-50 transition-opacity duration-300",
@@ -178,22 +181,23 @@ export function Drawer({
       <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-[2px]" onClick={onClose} />
       <div
         className={cx(
-          "absolute right-0 top-0 flex h-full w-full max-w-md flex-col bg-white shadow-[var(--tl-shadow-lg)] transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]",
+          "absolute right-0 top-0 flex h-full w-full max-w-lg flex-col bg-white shadow-[var(--tl-shadow-lg)] transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
-        <div className="flex items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
           <div className="min-w-0">{title}</div>
           <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
             <Icon.X size={18} />
           </Button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
         {footer ? (
-          <div className="border-t border-[var(--color-line)] px-5 py-4">{footer}</div>
+          <div className="shrink-0 border-t border-[var(--color-line)] px-5 py-4">{footer}</div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

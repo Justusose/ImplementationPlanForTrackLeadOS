@@ -70,7 +70,7 @@ export default function Support() {
   }
 
   return (
-    <div>
+    <div className="flex h-full flex-col">
       <PageHeader
         title="Support Inbox"
         subtitle="Message the TrackLead team directly — we usually reply within a few hours."
@@ -82,7 +82,7 @@ export default function Support() {
       />
 
       {creating ? (
-        <Card className="mb-4 p-6">
+        <Card className="mb-4 shrink-0 p-6">
           <h3 className="text-base">Start a new conversation</h3>
           <div className="mt-4 space-y-3">
             <Field label="Subject">
@@ -120,8 +120,8 @@ export default function Support() {
           </p>
         </Card>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-          <Card className="overflow-hidden p-0">
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_1fr]">
+          <Card className="min-h-0 overflow-y-auto p-0">
             <ul className="divide-y divide-[var(--color-line)]">
               {tickets.map((t) => (
                 <li key={t.id}>
@@ -213,13 +213,13 @@ export function Thread({
   const mine = (m: Message) => m.sender_role === senderRole;
 
   return (
-    <Card className="flex h-[560px] flex-col p-0">
-      <div className="border-b border-[var(--color-line)] px-5 py-3">
+    <Card className="flex min-h-0 flex-col p-0">
+      <div className="shrink-0 border-b border-[var(--color-line)] px-5 py-3">
         <div className="text-sm font-semibold text-[var(--color-ink)]">{ticket.subject}</div>
         <div className="text-xs text-[var(--color-muted)]">Ticket #{ticket.id.slice(0, 8)}</div>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
         {messages.map((m) => (
           <div key={m.id} className={cx("flex", mine(m) ? "justify-end" : "justify-start")}>
             <div
@@ -245,7 +245,7 @@ export function Thread({
         <div ref={endRef} />
       </div>
 
-      <div className="flex items-end gap-2 border-t border-[var(--color-line)] p-3">
+      <div className="flex shrink-0 items-end gap-2 border-t border-[var(--color-line)] p-3">
         <Textarea
           rows={2}
           className="flex-1"
