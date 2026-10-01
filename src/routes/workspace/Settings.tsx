@@ -1,5 +1,5 @@
 // Owner Settings: Profile & KYC, Integrations, Team invites, Billing.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../lib/icons";
 import { useAuth } from "../../lib/auth";
 import { paystackInit, select, serverCall, update } from "../../lib/supabase";
@@ -13,7 +13,17 @@ const PLANS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"profile" | "integrations" | "team" | "billing">("profile");
+  // Switch to Integrations tab automatically when returning from OAuth redirect.
+  const initialTab = (() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("code") || params.get("tab") === "integrations") return "integrations";
+    }
+    return "profile";
+  })();
+  const [tab, setTab] = useState<"profile" | "integrations" | "team" | "billing">(
+    initialTab as "profile" | "integrations" | "team" | "billing",
+  );
   const tabs = [
     { key: "profile" as const, label: "Profile" },
     { key: "integrations" as const, label: "Integrations" },
@@ -178,21 +188,290 @@ function Profile() {
   );
 }
 
+interface Connection {
+  account_id?: string;
+  username?: string;
+  avatar_url?: string;
+  platform?: string;
+  connected_at?: string;
+}
+
+const PLATFORMS = [
+  {
+    id: "instagram",
+    label: "Instagram",
+    description: "Comments, DMs & mentions from your Instagram Business account.",
+    color: "#E1306C",
+    icon: Icon.Meta,
+  },
+  {
+    id: "facebook",
+    label: "Facebook",
+    description: "Page comments, reviews and Messenger conversations.",
+    color: "#1877F2",
+    icon: Icon.Meta,
+  },
+  {
+    id: "tiktok",
+    label: "TikTok",
+    description: "Video comments and creator inbox from your TikTok Business.",
+    color: "#010101",
+    icon: Icon.Tiktok,
+  },
+  {
+    id: "twitter",
+    label: "X (Twitter)",
+    description: "Mentions, replies and DMs from your X profile.",
+    color: "#14171A",
+    icon: Icon.Twitter,
+  },
+  {
+    id: "linkedin",
+    label: "LinkedIn",
+    description: "Post comments and company page messages.",
+    color: "#0A66C2",
+    icon: Icon.Linkedin,
+  },
+] as const;
+
 function Integrations() {
+  const [connections, setConnections] = useState<Record<string, Connection>>({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const exchanged = useRef(false);
+
+  async function loadConnections() {
+    const { data } = await serverCall<{ connections: Record<string, Connection> }>(
+      "/social/connections",
+      {},
+    );
+    setConnections(data?.connections ?? {});
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    const status = params.get("status");
+    const accountId = params.get("account_id");
+
+    if ((code || status) && !exchanged.current) {
+      exchanged.current = true;
+      const platform = sessionStorage.getItem("sapi_connecting") ?? "";
+      sessionStorage.removeItem("sapi_connecting");
+      // Clean URL so a page refresh doesn't re-trigger the exchange.
+      window.history.replaceState({}, "", "/app/settings?tab=integrations");
+
+      serverCall<{ ok?: boolean; platform?: string }>("/social/exchange", {
+        code: code ?? "",
+        state: state ?? "",
+        status: status ?? "",
+        account_id: accountId ?? "",
+        connection_id: params.get("connection_id") ?? "",
+        platform: params.get("platform") ?? platform,
+      }).then(({ data, error }) => {
+        if (error) {
+          setMsg({ ok: false, text: error });
+        } else {
+          const name = data?.platform
+            ? data.platform.charAt(0).toUpperCase() + data.platform.slice(1)
+            : "Account";
+          setMsg({ ok: true, text: `${name} connected successfully!` });
+        }
+        loadConnections();
+      });
+    } else {
+      loadConnections();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function connect(platform: string) {
+    setBusy(platform);
+    setMsg(null);
+    const { data, error } = await serverCall<{
+      auth_url?: string;
+      connected?: boolean;
+    }>("/social/connect", { platform });
+    if (error) {
+      setMsg({ ok: false, text: error });
+      setBusy(null);
+      return;
+    }
+    if (data?.connected) {
+      setMsg({ ok: true, text: `${platform} connected successfully!` });
+      await loadConnections();
+      setBusy(null);
+      return;
+    }
+    if (data?.auth_url) {
+      sessionStorage.setItem("sapi_connecting", platform);
+      window.location.href = data.auth_url;
+      return;
+    }
+    setBusy(null);
+  }
+
+  async function disconnect(platform: string) {
+    setBusy(platform);
+    setMsg(null);
+    const { error } = await serverCall<{ ok?: boolean }>("/social/disconnect", { platform });
+    if (error) {
+      setMsg({ ok: false, text: error });
+    } else {
+      setConnections((prev) => {
+        const next = { ...prev };
+        delete next[platform];
+        return next;
+      });
+      setMsg({ ok: true, text: `${platform} disconnected.` });
+    }
+    setBusy(null);
+  }
+
+  async function sync() {
+    setBusy("sync");
+    setMsg(null);
+    const { data, error } = await serverCall<{ ok?: boolean; synced?: number }>(
+      "/social/sync",
+      {},
+    );
+    setBusy(null);
+    if (error) {
+      setMsg({ ok: false, text: error });
+    } else {
+      const n = data?.synced ?? 0;
+      setMsg({
+        ok: true,
+        text: n
+          ? `Pulled ${n} new engagement${n === 1 ? "" : "s"} into your Social Radar.`
+          : "You're up to date — no new engagements found.",
+      });
+    }
+  }
+
+  const connectedCount = Object.keys(connections).length;
+
   return (
-    <Card className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--color-brand-50)] text-[var(--color-brand)]">
-        <Icon.Radar size={26} />
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-[var(--color-ink)]">Social Connections</h3>
+          <p className="mt-1 max-w-lg text-sm text-[var(--color-muted)]">
+            Connect your social accounts to automatically capture comments, DMs and mentions as warm
+            leads in your{" "}
+            <a href="/app/radar" className="text-[var(--color-brand)] hover:underline">
+              Social Radar
+            </a>
+            .
+          </p>
+        </div>
+        {connectedCount > 0 ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy === "sync"}
+            onClick={sync}
+          >
+            <Icon.Radar size={15} />
+            {busy === "sync" ? "Syncing…" : "Sync now"}
+          </Button>
+        ) : null}
       </div>
-      <h3 className="text-lg">Integrations are coming soon</h3>
-      <p className="mt-1.5 max-w-md text-sm text-[var(--color-muted)]">
-        Connect Meta, TikTok, X and LinkedIn to turn comments, DMs and mentions into warm leads
-        automatically. We're putting the finishing touches on it.
-      </p>
-      <Badge tone="brand">
-        <Icon.Spark size={13} /> Coming soon
-      </Badge>
-    </Card>
+
+      {/* Feedback banner */}
+      {msg ? (
+        <div
+          className={cx(
+            "rounded-xl px-4 py-3 text-sm font-medium",
+            msg.ok ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700",
+          )}
+        >
+          {msg.text}
+        </div>
+      ) : null}
+
+      {/* Platform cards */}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {PLATFORMS.map((p) => {
+          const conn = connections[p.id];
+          const isConnected = !!conn;
+          const isBusy = busy === p.id;
+          const PlatformIcon = p.icon;
+          return (
+            <Card key={p.id} className="flex flex-col p-5">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
+                  style={{
+                    background: isConnected ? `${p.color}18` : "var(--color-line-soft)",
+                    color: isConnected ? p.color : "var(--color-faint)",
+                  }}
+                >
+                  <PlatformIcon size={20} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-[var(--color-ink)]">{p.label}</span>
+                    {isConnected ? <Badge tone="success">Connected</Badge> : null}
+                  </div>
+                  {conn?.username ? (
+                    <p className="mt-0.5 truncate text-xs text-[var(--color-muted)]">
+                      @{conn.username}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-muted)]">
+                      {p.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                {loading ? (
+                  <div className="h-8 w-full animate-pulse rounded-lg bg-[var(--color-line-soft)]" />
+                ) : isConnected ? (
+                  <button
+                    className="tl-focus w-full rounded-lg border border-[var(--color-line)] py-1.5 text-xs font-medium text-[var(--color-danger)] transition-colors hover:border-red-200 hover:bg-red-50 disabled:pointer-events-none disabled:opacity-50"
+                    disabled={isBusy}
+                    onClick={() => disconnect(p.id)}
+                  >
+                    {isBusy ? "Disconnecting…" : "Disconnect"}
+                  </button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    disabled={isBusy}
+                    onClick={() => connect(p.id)}
+                  >
+                    {isBusy ? "Connecting…" : "Connect"}
+                  </Button>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Footer note */}
+      <Card className="flex items-center gap-3 p-4">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--color-brand-50)] text-[var(--color-brand)]">
+          <Icon.Spark size={18} />
+        </div>
+        <div>
+          <p className="text-sm font-medium text-[var(--color-ink)]">Powered by socialAPI.ai</p>
+          <p className="text-xs text-[var(--color-muted)]">
+            No developer app setup required — we handle the OAuth approvals for Meta, TikTok,
+            YouTube, X and LinkedIn. New engagements appear in your Social Radar within minutes.
+          </p>
+        </div>
+      </Card>
+    </div>
   );
 }
 
